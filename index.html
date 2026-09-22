@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>分割QRファイル復元アプリ</title>
+  <!-- 高速なQRスキャンライブラリ -->
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #f5f5f7; margin: 0; padding: 20px; }
+    .card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+    #reader { width: 100%; border-radius: 12px; overflow: hidden; }
+    .progress-bar { background: #e0e0e0; border-radius: 8px; height: 16px; width: 100%; margin: 15px 0; overflow: hidden; }
+    .progress-fill { background: #007aff; height: 100%; width: 0%; transition: width 0.3s ease; }
+    #status { font-weight: bold; color: #333; margin-top: 10px; }
+    .badge { display: inline-block; background: #e1f5fe; color: #0288d1; padding: 4px 12px; border-radius: 12px; font-size: 0.9em; margin: 2px; }
+    button { background: #007aff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; margin-top: 15px; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h2>分割QR 復元スキャナー</h2>
+  <p style="color:#666; font-size:0.85em;">A4の印刷紙にカメラをかざしてください</p>
+  
+  <div id="reader"></div>
+
+  <div class="progress-bar">
+    <div id="progress" class="progress-fill"></div>
+  </div>
+  
+  <div id="status">カメラ起動中...</div>
+  <div id="badges" style="margin-top: 10px;"></div>
+  
+  <button id="reset-btn" onclick="resetScanner()" style="display:none;">やり直す</button>
+</div>
+
+<script>
+  const chunks = {};
+  let totalChunks = null;
+  let html5QrcodeScanner = null;
+
+  function onScanSuccess(decodedText) {
+    // ヘッダー解析 (例: "1/16:Base64文字列...")
+    const match = decodedText.match(/^(\d+)\/(\d+):(.+)$/);
+    if (!match) return;
+
+    const index = parseInt(match[1]);
+    const total = parseInt(match[2]);
+    const data = match[3];
+
+    totalChunks = total;
+
+    // 新しいピースのみ保持
+    if (!chunks[index]) {
+      chunks[index] = data;
+      
+      // フィードバック (音・バイブレーション)
+      if (navigator.vibrate) navigator.vibrate(100);
+      
+      updateUI();
+
+      // 全件揃ったら即座に復元
+      if (Object.keys(chunks).length === totalChunks) {
+        finishScan();
+      }
+    }
+  }
+
+  function updateUI() {
+    const current = Object.keys(chunks).length;
+    const percent = Math.round((current / totalChunks) * 100);
+    
+    document.getElementById("progress").style.width = percent + "%";
+    document.getElementById("status").innerText = `読み取り中: ${current} / ${totalChunks} 枚 (${percent}%)`;
+
+    // 読み取り済みバッジ表示
+    const badgeContainer = document.getElementById("badges");
+    badgeContainer.innerHTML = Object.keys(chunks)
+      .sort((a,b) => a-b)
+      .map(num => `<span class="badge">#${num}</span>`)
+      .join("");
+  }
+
+  function finishScan() {
+    if (html5QrcodeScanner) {
+      html5QrcodeScanner.clear();
+    }
+    
+    document.getElementById("status").innerText = "🎉 すべてスキャン完了！復元処理中...";
+    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+
+    // 1番から順番にBase64を結合
+    let fullBase64 = "";
+    for (let i = 1; i <= totalChunks; i++) {
+      fullBase64 += chunks[i];
+    }
+
+    // バイナリ変換 & ファイル化
+    try {
+      const byteCharacters = atob(fullBase64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: "application/octet-stream" });
+
+      // ダウンロード発火
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "restored_file.bin"; // 復元時のファイル名
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      document.getElementById("status").innerText = "✅ ファイルをダウンロード保存しました！";
+      document.getElementById("reset-btn").style.display = "inline-block";
+    } catch (e) {
+      document.getElementById("status").innerText = "❌ データの復元に失敗しました。(破損の可能性があります)";
+      console.error(e);
+    }
+  }
+
+  function resetScanner() {
+    location.reload();
+  }
+
+  // カメラ起動処理
+  window.onload = () => {
+    html5QrcodeScanner = new Html5QrcodeScanner(
+      "reader", 
+      { fps: 15, qrbox: { width: 220, height: 220 } },
+      /* verbose= */ false
+    );
+    html5QrcodeScanner.render(onScanSuccess);
+  };
+</script>
+
+</body>
+</html>
