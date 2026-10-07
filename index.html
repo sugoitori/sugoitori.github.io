@@ -2,139 +2,254 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>分割QRファイル復元アプリ</title>
-  <!-- 高速なQRスキャンライブラリ -->
-  <script src="https://unpkg.com/html5-qrcode"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>分割QR / DataMatrix バイナリ復元ツール</title>
+  <!-- Multi-format 2D Code (QR & DataMatrix) 解析ライブラリ ZXing -->
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <!-- PDF解析ライブラリ pdf.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #f5f5f7; margin: 0; padding: 20px; }
-    .card { background: white; border-radius: 16px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
-    #reader { width: 100%; border-radius: 12px; overflow: hidden; }
-    .progress-bar { background: #e0e0e0; border-radius: 8px; height: 16px; width: 100%; margin: 15px 0; overflow: hidden; }
-    .progress-fill { background: #007aff; height: 100%; width: 0%; transition: width 0.3s ease; }
-    #status { font-weight: bold; color: #333; margin-top: 10px; }
-    .badge { display: inline-block; background: #e1f5fe; color: #0288d1; padding: 4px 12px; border-radius: 12px; font-size: 0.9em; margin: 2px; }
-    button { background: #007aff; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; cursor: pointer; margin-top: 15px; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 600px;
+      margin: 20px auto;
+      padding: 20px;
+      background-color: #f8f9fa;
+      color: #333;
+    }
+    .card {
+      background: white;
+      padding: 24px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    h1 { font-size: 1.3rem; color: #0d6efd; margin-top: 0; }
+    .upload-area {
+      border: 2px dashed #0d6efd;
+      border-radius: 8px;
+      padding: 30px;
+      text-align: center;
+      background: #eef5ff;
+      cursor: pointer;
+      margin-bottom: 20px;
+    }
+    .upload-area:hover { background: #e2edff; }
+    input[type="file"] { display: none; }
+    .progress-bar {
+      height: 12px;
+      background: #e9ecef;
+      border-radius: 6px;
+      overflow: hidden;
+      margin: 15px 0;
+    }
+    .progress-fill {
+      height: 100%;
+      background: #0d6efd;
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    #status { font-weight: bold; margin-bottom: 10px; }
+    .btn {
+      display: inline-block;
+      width: 100%;
+      padding: 12px;
+      background: #198754;
+      color: white;
+      text-align: center;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: bold;
+      border: none;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+    .btn:disabled { background: #ccc; cursor: not-allowed; }
+    #log {
+      font-family: monospace;
+      font-size: 0.85rem;
+      background: #1e1e1e;
+      color: #00ff66;
+      padding: 10px;
+      border-radius: 6px;
+      max-height: 160px;
+      overflow-y: auto;
+      margin-top: 15px;
+    }
   </style>
 </head>
 <body>
 
 <div class="card">
-  <h2>分割QR 復元スキャナー</h2>
-  <p style="color:#666; font-size:0.85em;">A4の印刷紙にカメラをかざしてください</p>
-  
-  <div id="reader"></div>
+  <h1>分割 2Dコード (QR / DataMatrix) 復元ツール</h1>
+  <p>PDFまたはコード画像群を選択すると、自動解析して元のファイルを復元します。</p>
 
+  <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+    📄 PDFファイルまたはコード画像をドロップ / 選択
+    <input type="file" id="fileInput" multiple accept="application/pdf,image/*" onchange="handleFiles(this.files)">
+  </div>
+
+  <div id="status">ファイルを選択してください</div>
+  
   <div class="progress-bar">
     <div id="progress" class="progress-fill"></div>
   </div>
-  
-  <div id="status">カメラ起動中...</div>
-  <div id="badges" style="margin-top: 10px;"></div>
-  
-  <button id="reset-btn" onclick="resetScanner()" style="display:none;">やり直す</button>
+
+  <button id="downloadBtn" class="btn" disabled onclick="downloadFile()">ファイルを復元してダウンロード</button>
+
+  <div id="log"></div>
 </div>
 
 <script>
-  const chunks = {};
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  // ZXing MultiFormatReader (QR & DataMatrix 両対応)
+  const codeReader = new ZXing.BrowserMultiFormatReader();
+
+  let chunks = {};
   let totalChunks = null;
-  let html5QrcodeScanner = null;
+  let restoredBlob = null;
 
-  function onScanSuccess(decodedText) {
-    // ヘッダー解析 (例: "1/16:Base64文字列...")
-    const match = decodedText.match(/^(\d+)\/(\d+):(.+)$/);
-    if (!match) return;
+  function log(msg) {
+    const logDiv = document.getElementById('log');
+    logDiv.innerHTML += msg + '<br>';
+    logDiv.scrollTop = logDiv.scrollHeight;
+  }
 
-    const index = parseInt(match[1]);
-    const total = parseInt(match[2]);
-    const data = match[3];
+  async function handleFiles(files) {
+    if (!files.length) return;
+    chunks = {};
+    totalChunks = null;
+    document.getElementById('downloadBtn').disabled = true;
+    document.getElementById('log').innerHTML = '';
+    
+    log('解析を開始します...');
 
-    totalChunks = total;
+    for (let file of files) {
+      if (file.type === 'application/pdf') {
+        await processPDF(file);
+      } else if (file.type.startsWith('image/')) {
+        await processImageFile(file);
+      }
+    }
 
-    // 新しいピースのみ保持
-    if (!chunks[index]) {
-      chunks[index] = data;
-      
-      // フィードバック (音・バイブレーション)
-      if (navigator.vibrate) navigator.vibrate(100);
-      
-      updateUI();
+    checkCompletion();
+  }
 
-      // 全件揃ったら即座に復元
-      if (Object.keys(chunks).length === totalChunks) {
-        finishScan();
+  async function processPDF(file) {
+    log(`PDF処理中: ${file.name}`);
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 2.0 }); // 200%解像度でレンダリング
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+      await scanCanvasForCodes(canvas, `PDF Page ${i}`);
+    }
+  }
+
+  async function processImageFile(file) {
+    const img = new Image();
+    img.src = URL.createObjectURL(file);
+    await img.decode();
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+
+    await scanCanvasForCodes(canvas, file.name);
+  }
+
+  async function scanCanvasForCodes(canvas, sourceName) {
+    try {
+      // 複数コード一括検出処理
+      const results = await codeReader.decodeMultipleFromCanvas(canvas);
+      if (results && results.length > 0) {
+        for (let result of results) {
+          parseQRData(result.text, sourceName);
+        }
+      }
+    } catch (e) {
+      // 1個のみ検出の場合のフォールバック
+      try {
+        const result = await codeReader.decodeFromCanvas(canvas);
+        if (result) {
+          parseQRData(result.text, sourceName);
+        }
+      } catch (err) {
+        // コード未検出
       }
     }
   }
 
-  function updateUI() {
-    const current = Object.keys(chunks).length;
-    const percent = Math.round((current / totalChunks) * 100);
-    
-    document.getElementById("progress").style.width = percent + "%";
-    document.getElementById("status").innerText = `読み取り中: ${current} / ${totalChunks} 枚 (${percent}%)`;
+  function parseQRData(dataText, sourceName) {
+    const match = dataText.match(/^(\d+)\/(\d+):(.+)$/);
+    if (match) {
+      const idx = parseInt(match[1]);
+      const total = parseInt(match[2]);
+      const data = match[3];
 
-    // 読み取り済みバッジ表示
-    const badgeContainer = document.getElementById("badges");
-    badgeContainer.innerHTML = Object.keys(chunks)
-      .sort((a,b) => a-b)
-      .map(num => `<span class="badge">#${num}</span>`)
-      .join("");
+      totalChunks = total;
+      if (!chunks[idx]) {
+        chunks[idx] = data;
+        log(`✓ コード検出 (${idx}/${total}) - ${sourceName}`);
+      }
+    }
   }
 
-  function finishScan() {
-    if (html5QrcodeScanner) {
-      html5QrcodeScanner.clear();
-    }
+  function checkCompletion() {
+    const currentCount = Object.keys(chunks).length;
     
-    document.getElementById("status").innerText = "🎉 すべてスキャン完了！復元処理中...";
-    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    if (totalChunks) {
+      const percent = Math.round((currentCount / totalChunks) * 100);
+      document.getElementById('progress').style.width = `${percent}%`;
+      document.getElementById('status').innerText = `進捗: ${currentCount} / ${totalChunks} 枚 検出`;
 
-    // 1番から順番にBase64を結合
-    let fullBase64 = "";
+      if (currentCount === totalChunks) {
+        log('🎉 すべてのコード (QR/DataMatrix) の読み取りが完了しました！');
+        buildBinary();
+      } else {
+        log(`残り ${totalChunks - currentCount} 枚のコードが足りません。`);
+      }
+    } else {
+      document.getElementById('status').innerText = '有効なコードが見つかりませんでした。';
+    }
+  }
+
+  function buildBinary() {
+    let fullBase64 = '';
     for (let i = 1; i <= totalChunks; i++) {
       fullBase64 += chunks[i];
     }
 
-    // バイナリ変換 & ファイル化
     try {
-      const byteCharacters = atob(fullBase64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      const binaryString = atob(fullBase64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
       }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: "application/octet-stream" });
-
-      // ダウンロード発火
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = "restored_file.bin"; // 復元時のファイル名
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      document.getElementById("status").innerText = "✅ ファイルをダウンロード保存しました！";
-      document.getElementById("reset-btn").style.display = "inline-block";
+      restoredBlob = new Blob([bytes], { type: 'application/octet-stream' });
+      document.getElementById('downloadBtn').disabled = false;
+      document.getElementById('status').innerText = '復元準備完了！ボタンを押してダウンロードしてください。';
     } catch (e) {
-      document.getElementById("status").innerText = "❌ データの復元に失敗しました。(破損の可能性があります)";
-      console.error(e);
+      log('エラー: Base64デコードに失敗しました。');
     }
   }
 
-  function resetScanner() {
-    location.reload();
+  function downloadFile() {
+    if (!restoredBlob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(restoredBlob);
+    a.download = 'restored_file.bin';
+    a.click();
   }
-
-  // カメラ起動処理
-  window.onload = () => {
-    html5QrcodeScanner = new Html5QrcodeScanner(
-      "reader", 
-      { fps: 15, qrbox: { width: 220, height: 220 } },
-      /* verbose= */ false
-    );
-    html5QrcodeScanner.render(onScanSuccess);
-  };
 </script>
 
 </body>
